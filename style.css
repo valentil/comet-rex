@@ -1,0 +1,46 @@
+html, body {
+    margin: 0;
+    overflow: hidden;
+    height: 100%;
+    width: 100%;
+}
+
+
+#graphics-options-button {
+    position: absolute;
+    top: 10px;
+    right: 180px; /* Position to the left of stats-panel */
+    background: rgba(0, 0, 0, 0.7);
+    color: #00ff00;
+    padding: 10px;
+    border-radius: 5px;
+    font-family: 'Courier New', Courier, monospace;
+    font-size: 12px;
+    border: 1px solid #00ff00;
+    cursor: pointer;
+    z-index: 1000;
+}
+
+#graphics-options-menu {
+    position: absolute;
+    top: 40px; /* Below the button */
+    right: 10px; /* Aligned with stats-panel */
+    background: rgba(0, 0, 0, 0.9);
+    color: #00ff00;
+    padding: 10px;
+    border-radius: 5px;
+    font-family: 'Courier New', Courier, monospace;
+    font-size: 12px;
+    z-index: 1001;
+    min-width: 150px;
+    border: 1px solid #00ff00;
+}
+
+#graphics-options-menu p {
+    margin: 5px 0;
+    cursor: pointer;
+}
+
+#graphics-options-menu p:hover {
+    color: #00ffff;
+}
