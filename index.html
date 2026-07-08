@@ -22,6 +22,33 @@
     </style>
 </head>
 <body>
+    <!-- W1: Start screen + trajectory select. Shown on first load (no ?journey= param). -->
+    <div id="start-screen">
+        <div id="start-inner">
+            <h1 id="start-title">COMET REX</h1>
+            <p id="start-subtitle">Choose your trajectory through the solar system</p>
+            <div id="journey-cards">
+                <button class="journey-card" data-journey="normal">
+                    <span class="jc-name">Inner Planets</span>
+                    <span class="jc-desc">The classic run. Full-scale orbits from Neptune down to Mercury.</span>
+                </button>
+                <button class="journey-card" data-journey="tour">
+                    <span class="jc-name">Grand Tour</span>
+                    <span class="jc-desc">A faster, compacted sweep past every world. More debris, more speed.</span>
+                </button>
+                <button class="journey-card" data-journey="reverse-tour">
+                    <span class="jc-name">Reverse Tour</span>
+                    <span class="jc-desc">The Grand Tour layout, flipped. Same worlds, new pacing.</span>
+                </button>
+                <button class="journey-card" data-journey="oort-cloud">
+                    <span class="jc-name">Oort Cloud</span>
+                    <span class="jc-desc">A long, cold haul with a giant Neptune looming at the edge.</span>
+                </button>
+            </div>
+            <p id="start-hint">Then press <b>SPACE</b> or <b>W</b> to launch off your home world.</p>
+            <p id="start-controls"><b>WASD</b> move &middot; <b>Q/E</b> strafe &middot; <b>SPACE</b> jump &middot; <b>B</b> mine a chunk &middot; walk into <b>crystals</b> near caves to collect</p>
+        </div>
+    </div>
     <div id="stats-panel">
         <div>FPS: <span id="fps-val">0</span></div>
         <div>Triangles: <span id="tri-val">0</span></div>

@@ -1,8 +1,10 @@
 # Comet Rex 🦖☄️
 
+[![Made with FeatureBoard](https://img.shields.io/badge/Made_with-FeatureBoard-00c8ff?style=flat-square)](https://featureboard.ai) [![License: MIT](https://img.shields.io/badge/License-MIT-3fb950?style=flat-square)](./LICENSE)
+
 A browser-based 3D space runner built with **Three.js** and **WebGL**. You ride a dino-astronaut on a comet, streaking past photo-textured planets of the solar system with a real-time particle comet tail, starfield, and sun flare. Runs entirely client-side — no server, no build step.
 
-> One of the example projects built with [FeatureBoard](https://featureboard.dev).
+> One of the example projects built with [FeatureBoard](https://featureboard.ai).
 
 ## Live demo
 
@@ -38,3 +40,11 @@ Only the assets actually referenced by the code ship here — the original worki
 ## License
 
 MIT © Lewis Valentine
+
+## The AI-native approach
+
+Built the FeatureBoard way — see [How We Build](https://featureboard.ai/approach.html):
+
+- **Planning & metadata as substrate** — the game grew from a living `featurelist.md`/`TASKS.md`, not ad-hoc edits.
+- **Radical verbosity** — a live FPS / triangle / draw-call / top-geometry HUD makes render provenance visible at runtime.
+- **Validation over review** — feature and movement behaviour covered by executable test specs.

@@ -144,6 +144,33 @@ const urlParams = new URLSearchParams(window.location.search);
 const journeyType = urlParams.get('journey') || 'normal';
 console.log(`Starting ${journeyType} journey...`);
 
+// W1/W2: run-phase state machine.
+//   'menu'    -> start overlay is showing, sim paused (only the comet renders behind it)
+//   'intro'   -> staged just off the home planet, waiting for the player to hit thrust (W2)
+//   'playing' -> normal run
+// A journey is chosen by navigating to ?journey=<type>; on that reload the menu is skipped.
+const journeyChosen = urlParams.has('journey');
+let gamePhase = journeyChosen ? 'intro' : 'menu';
+
+// Wire the start overlay (element lives in index.html). Each card sets journeyType via a reload,
+// which is the safe client-side path given planetData is built from journeyType at module load.
+const startScreenEl = document.getElementById('start-screen');
+if (startScreenEl) {
+    if (gamePhase === 'menu') {
+        startScreenEl.classList.remove('hidden');
+        startScreenEl.querySelectorAll('.journey-card').forEach((card) => {
+            card.addEventListener('click', () => {
+                const chosen = card.getAttribute('data-journey') || 'normal';
+                const params = new URLSearchParams(window.location.search);
+                params.set('journey', chosen);
+                window.location.search = params.toString();
+            });
+        });
+    } else {
+        startScreenEl.classList.add('hidden');
+    }
+}
+
 // Starfield background
 // Starfield background (now handled by Stars.js particle system)
 // Milky Way Skybox (SD23)
@@ -425,25 +452,59 @@ function updateScore(deltaTime) {
 // --- Game Objects ---
 
 
+// W3: recessed cave pockets. Directions/size/depth are populated just before the comet
+// is built (see the `cometCaves = [...]` assignment near the comet section).
+let cometCaves = [];
+
+// W3: how far (world units) to push the surface INWARD at `dir` to carve a cave, plus a
+// 0..1 "insideness" factor used to darken the cave interior. Deliberately kept as a
+// single-valued radial term so each chunk stays a displaced sphere. The break system
+// (chunkCenter-based drift) and the player physics (radial ray from above finds one
+// surface) both depend on that contract, so caves are bowl/pocket concavities rather than
+// true boolean tunnels.
+function caveInfluence(dir) {
+    let depth = 0;
+    let factor = 0;
+    for (let c = 0; c < cometCaves.length; c++) {
+        const cave = cometCaves[c];
+        const ang = dir.angleTo(cave.dir);
+        if (ang < cave.radius) {
+            const t = ang / cave.radius;              // 0 at cave center -> 1 at rim
+            const bowl = Math.cos(t * Math.PI * 0.5); // smooth 1 -> 0 falloff
+            const f = bowl * bowl;
+            depth += cave.depth * f;
+            if (f > factor) factor = f;
+        }
+    }
+    return { depth, factor };
+}
+
 // --- Shared radial displacement field (all shells conform to this) ---
 function radialDisplacement(dir) {
     const freq1 = 2.5;        // Large scale noise
-    const amp1  = 4.0;        // SDGF-41: Scaled peaks for larger comet (was 0.8)
-    
+    const amp1  = 5.2;        // W3: stronger relief for the larger, more detailed comet (was 4.0)
+
     const freq2 = 8.0;        // Medium scale noise
-    const amp2  = 1.25;       // SDGF-41: Scaled (was 0.25)
-    
+    const amp2  = 1.6;        // W3: (was 1.25)
+
     const freq3 = 20.0;       // Fine surface noise
-    const amp3  = 0.75;       // SDGF-41: Scaled (was 0.15)
+    const amp3  = 0.9;        // W3: (was 0.75)
+
+    const freq4 = 42.0;       // W3: extra fine crag detail
+    const amp4  = 0.35;
 
     const n1 = Math.sin(dir.x * freq1) + Math.cos(dir.y * freq1) + Math.sin(dir.z * freq1);
     const n2 = Math.sin(dir.x * freq2 + 1.2) + Math.sin(dir.y * freq2 + 0.5) + Math.sin(dir.z * freq2);
     const n3 = Math.cos(dir.x * freq3 + 0.7) + Math.cos(dir.y * freq3) + Math.cos(dir.z * freq3 + 2.1);
+    const n4 = Math.sin(dir.x * freq4 + 2.3) + Math.cos(dir.z * freq4 + 1.1);
 
     // SDGB-2: Clamp the negative displacement so cracks aren't infinitely deep
-    let noiseVal = (n1 * amp1) + (n2 * amp2) + (n3 * amp3);
-    const maxCrackDepth = -0.3; // SDGF-43: Reduced crack depth (was -1.0) to tighten gaps
+    let noiseVal = (n1 * amp1) + (n2 * amp2) + (n3 * amp3) + (n4 * amp4);
+    const maxCrackDepth = -0.4; // SDGF-43: Reduced crack depth to tighten gaps
     if (noiseVal < maxCrackDepth) noiseVal = maxCrackDepth;
+
+    // W3: carve caves AFTER the crack clamp so pockets can be genuinely recessed.
+    noiseVal -= caveInfluence(dir).depth;
 
     return noiseVal;
 }
@@ -512,7 +573,7 @@ function getSharedBumpTex() {
 
 
 // Comet
-const cometRadius = 30; // SDGF-41: 5x bigger (from 6 to 30)
+const cometRadius = 40; // W3: bigger, more detailed body (was 30)
 window.cometRadius = cometRadius; // Share for CometTail.js
 // SDGF-78: Inverse gravity state for comet break pieces
 window.cometCurrentVelocity = new THREE.Vector3(0, 0, 0);
@@ -532,81 +593,89 @@ for (let i = 0; i < numChunks; i++) {
 
 const oblongScale = new THREE.Vector3(1.3, 1.0, 0.8); // SDGF-41: Oblong shape
 
-for (let i = 0; i < numChunks; i++) {
-    // We create a full sphere geometry then filter vertices by distance to chunk center
-    const fullSphereGeo = new THREE.SphereGeometry(cometRadius, 64, 64); // Increased fidelity (48 -> 64)
-    const posAttr = fullSphereGeo.attributes.position;
-    const center = chunkCenters[i];
+// W3: 2-3 recessed cave pockets. Directions are chosen away from the player's +Y spawn
+// point and the embedded saucer so nothing spawns inside a pit.
+cometCaves = [
+    { dir: new THREE.Vector3( 0.85, 0.25, 0.20).normalize(), radius: 0.55, depth: 11 },
+    { dir: new THREE.Vector3(-0.70,-0.20, 0.60).normalize(), radius: 0.50, depth: 10 },
+    { dir: new THREE.Vector3( 0.10,-0.85,-0.45).normalize(), radius: 0.48, depth: 9  },
+];
 
-    // Filter vertices: Only keep those closest to THIS center (Voronoi)
-    // This creates jigsaw pieces that meet at arbitrary points on the sphere, not just poles
-    for (let j = 0; j < posAttr.count; j++) {
-        const tempPos = new THREE.Vector3().fromBufferAttribute(posAttr, j).normalize();
-        
-        let closestIdx = -1;
-        let minDist = Infinity;
-        for (let k = 0; k < numChunks; k++) {
-            const d = tempPos.distanceTo(chunkCenters[k]);
-            if (d < minDist) {
-                minDist = d;
-                closestIdx = k;
+// W3: comet-detail quality toggle. Segments/chunk drives triangle count; a full sphere is
+// generated per chunk and non-owned verts collapse to the origin (degenerate), so segment
+// count is the dominant perf lever. 32=LOW, 48=MED (default), 64=HIGH.
+let cometDetailSegments = 48;
+
+// W3: build the 16 Voronoi jigsaw chunks. Returns fresh meshes; each keeps userData.chunkCenter
+// so the existing break system (breakCometSection/updateCometSections) works unchanged.
+function buildCometSections(segments) {
+    const sections = [];
+    for (let i = 0; i < numChunks; i++) {
+        // Full sphere, then filter vertices by nearest Voronoi center (jigsaw pieces that meet
+        // at arbitrary points, avoiding polar seams).
+        const fullSphereGeo = new THREE.SphereGeometry(cometRadius, segments, segments);
+        const posAttr = fullSphereGeo.attributes.position;
+        const center = chunkCenters[i];
+
+        // W3: per-vertex colours so cave interiors read as dark recessed pockets.
+        const colors = new Float32Array(posAttr.count * 3);
+
+        for (let j = 0; j < posAttr.count; j++) {
+            const tempPos = new THREE.Vector3().fromBufferAttribute(posAttr, j).normalize();
+
+            let closestIdx = -1;
+            let minDist = Infinity;
+            for (let k = 0; k < numChunks; k++) {
+                const d = tempPos.distanceTo(chunkCenters[k]);
+                if (d < minDist) { minDist = d; closestIdx = k; }
+            }
+
+            const dir = tempPos.clone();
+            if (closestIdx === i) {
+                // Apply displacement (relief + caves) then oblong scaling.
+                const surfaceRadius = cometRadius + radialDisplacement(dir);
+                posAttr.setXYZ(j,
+                    dir.x * surfaceRadius * oblongScale.x,
+                    dir.y * surfaceRadius * oblongScale.y,
+                    dir.z * surfaceRadius * oblongScale.z
+                );
+                // Darken toward cave interiors (0 outside -> deep inside).
+                const cf = caveInfluence(dir).factor;
+                const shade = 1.0 - cf * 0.78;
+                colors[j * 3] = shade; colors[j * 3 + 1] = shade; colors[j * 3 + 2] = shade;
+            } else {
+                // Collapse unused vertices.
+                posAttr.setXYZ(j, 0, 0, 0);
+                colors[j * 3] = colors[j * 3 + 1] = colors[j * 3 + 2] = 1;
             }
         }
-        
-        const dir = tempPos.clone();
-        if (closestIdx === i) {
-            // Apply Displacement
-            const surfaceRadius = cometRadius + radialDisplacement(dir);
-            // SDGF-41: Apply oblong scaling to the final vertex position
-            posAttr.setXYZ(j, 
-                dir.x * surfaceRadius * oblongScale.x, 
-                dir.y * surfaceRadius * oblongScale.y, 
-                dir.z * surfaceRadius * oblongScale.z
-            );
-        } else {
-            // Collapse unused vertices
-            posAttr.setXYZ(j, 0, 0, 0);
-        }
+
+        fullSphereGeo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+        fullSphereGeo.computeVertexNormals();
+        fullSphereGeo.normalizeNormals();
+
+        const sectionMat = new THREE.MeshStandardMaterial({
+            color: new THREE.Color(0x88aaff),
+            roughness: 0.6, // SDGF-40: Increased roughness for better lighting response
+            metalness: 0.2,
+            emissive: 0x112244,
+            emissiveIntensity: 0.2,
+            transparent: true,
+            opacity: 0.9,
+            side: THREE.DoubleSide,
+            vertexColors: true
+        });
+        sectionMat.bumpMap = getSharedBumpTex();
+        sectionMat.bumpScale = 1.2;
+
+        const sectionMesh = new THREE.Mesh(fullSphereGeo, sectionMat);
+        sectionMesh.userData.chunkCenter = center.clone(); // Store for drift calculation
+        sections.push(sectionMesh);
     }
-
-    fullSphereGeo.computeVertexNormals();
-    fullSphereGeo.normalizeNormals();
-
-    // Watertight Skirt for Voronoi Piece
-    const skirtGeo = new THREE.BufferGeometry();
-    const skirtVertices = [];
-    
-    // We need to find the border vertices of this Voronoi cell.
-    // A simple way is to find vertices that are 'close' to another cell's boundary.
-    // For this task, we'll use a simplified skirt that connects the kept vertices 
-    // to their inner radius.
-    for (let j = 0; j < posAttr.count; j++) {
-        const v = new THREE.Vector3().fromBufferAttribute(posAttr, j);
-        if (v.lengthSq() > 0.001) {
-            const dir = v.clone().normalize();
-            const pInner = dir.multiplyScalar(v.length() - shellThickness);
-            // This is a simplified volume approach; for a true jigsaw we'd bridge edges.
-            // Given the web-runner constraints, we'll focus on the polar fix.
-        }
-    }
-
-    const sectionMat = new THREE.MeshStandardMaterial({
-        color: new THREE.Color(0x88aaff),
-        roughness: 0.6, // SDGF-40: Increased roughness for better lighting response
-        metalness: 0.2,
-        emissive: 0x112244,
-        emissiveIntensity: 0.2,
-        transparent: true,
-        opacity: 0.9,
-        side: THREE.DoubleSide
-    });
-    sectionMat.bumpMap = getSharedBumpTex();
-    sectionMat.bumpScale = 1.2;
-
-    const sectionMesh = new THREE.Mesh(fullSphereGeo, sectionMat);
-    sectionMesh.userData.chunkCenter = center.clone(); // Store for drift calculation
-    cometSections.push(sectionMesh);
+    return sections;
 }
+
+buildCometSections(cometDetailSegments).forEach(s => cometSections.push(s));
 
 const comet = new THREE.Group();
 
@@ -619,17 +688,133 @@ cometSections.forEach(s => comet.add(s));
 comet.add(snowCore);
 const orbitPathGeometry = new THREE.BufferGeometry().setFromPoints(orbitPathPoints);
 cometOrbitLine = new THREE.Line(orbitPathGeometry, orbitLineMaterial);
-scene.add(cometOrbitLine);
+// W5: parent the orbit path to cosmicRoot so it shares the solar-system frame (the comet is
+// pinned at the origin while cosmicRoot moves the world past it). Points/colour set in initOrbitPath().
+cosmicRoot.add(cometOrbitLine);
 scene.add(comet);
 // SDGF-65: Initialize Comet Orbit Line
 comet.position.set(0, 0, 0);
 
 // Feature SD-B9 Fix: Add local lights to comet so it's always visible
-const cometLight = new THREE.PointLight(0x88aaff, 1, 100); // Increased range for 5x bigger comet
+const cometLight = new THREE.PointLight(0x88aaff, 1, 160); // W3: range bumped for larger comet
 comet.add(cometLight);
-const cometLight2 = new THREE.PointLight(0xffffff, 0.5, 100); // Increased range
-cometLight2.position.set(0, 50, 0); // Moved up for larger comet
+const cometLight2 = new THREE.PointLight(0xffffff, 0.5, 160); // W3: range bumped
+cometLight2.position.set(0, 60, 0); // Moved up for larger comet
 comet.add(cometLight2);
+
+// --- W3: rebuild comet at a new detail level (quality toggle) ---
+function rebuildComet(segments) {
+    cometDetailSegments = segments;
+    // Tear down current sections wherever they live (still on the comet, or mid-break in the scene).
+    cometSections.forEach(s => {
+        if (s.userData.breakEmitter) { s.userData.breakEmitter.destroy(); s.userData.breakEmitter = null; }
+        if (s.parent) s.parent.remove(s);
+        if (s.geometry) s.geometry.dispose();
+        if (s.material) s.material.dispose();
+    });
+    cometSections.length = 0;
+    buildCometSections(segments).forEach(s => { cometSections.push(s); comet.add(s); });
+    if (typeof respawnCometPickups === 'function') respawnCometPickups();
+    console.log(`W3: comet rebuilt at ${segments} segments/chunk`);
+}
+window.rebuildComet = rebuildComet;
+
+// --- W4: on-comet crystal pickups placed in/around the caves ---
+const cometPickups = [];
+let crystalsCollected = 0;
+let chunksMined = 0;
+let pickupRespawnPending = false;
+
+const crystalHud = document.createElement('div');
+crystalHud.style.position = 'absolute';
+crystalHud.style.top = '84px';
+crystalHud.style.left = '20px';
+crystalHud.style.color = '#66ffcc';
+crystalHud.style.fontFamily = 'Arial, sans-serif';
+crystalHud.style.fontSize = '16px';
+crystalHud.style.fontWeight = 'bold';
+crystalHud.innerHTML = 'Crystals: 0 | Mined: 0';
+document.body.appendChild(crystalHud);
+function updateCrystalHud() {
+    crystalHud.innerHTML = `Crystals: ${crystalsCollected} | Mined: ${chunksMined}`;
+}
+
+// Local surface point (comet space) for a given outward direction.
+function surfacePoint(dir) {
+    const d = dir.clone().normalize();
+    const r = cometRadius + radialDisplacement(d);
+    return new THREE.Vector3(d.x * r * oblongScale.x, d.y * r * oblongScale.y, d.z * r * oblongScale.z);
+}
+
+function makeCrystal() {
+    const geo = new THREE.OctahedronGeometry(1.7, 0);
+    const mat = new THREE.MeshStandardMaterial({
+        color: 0x66ffcc, emissive: 0x228866, emissiveIntensity: 0.9,
+        roughness: 0.2, metalness: 0.4, transparent: true, opacity: 0.95
+    });
+    const m = new THREE.Mesh(geo, mat);
+    m.add(new THREE.PointLight(0x66ffcc, 0.6, 34));
+    return m;
+}
+
+function spawnCometPickups() {
+    cometCaves.forEach((cave) => {
+        // one at the cave floor, two around the rim
+        const spots = [cave.dir.clone()];
+        for (let k = 0; k < 2; k++) {
+            const t = new THREE.Vector3(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5);
+            const tangent = new THREE.Vector3().crossVectors(cave.dir, t).normalize();
+            spots.push(cave.dir.clone().addScaledVector(tangent, cave.radius * 0.6).normalize());
+        }
+        spots.forEach(sdir => {
+            const m = makeCrystal();
+            const base = surfacePoint(sdir).add(sdir.clone().multiplyScalar(2.0)); // sit on the surface
+            m.position.copy(base);
+            comet.add(m);
+            cometPickups.push(m);
+        });
+    });
+    updateCrystalHud();
+}
+
+function respawnCometPickups() {
+    for (let i = cometPickups.length - 1; i >= 0; i--) {
+        const m = cometPickups[i];
+        if (m.parent) m.parent.remove(m);
+        if (m.geometry) m.geometry.dispose();
+        if (m.material) m.material.dispose();
+    }
+    cometPickups.length = 0;
+    spawnCometPickups();
+}
+
+// W4 input #3: walk into a crystal (proximity) to collect it -> score + state.
+function updateCometPickups(deltaTime) {
+    if (!player) return;
+    for (let i = cometPickups.length - 1; i >= 0; i--) {
+        const m = cometPickups[i];
+        m.rotation.y += deltaTime * 1.5;
+        m.rotation.x += deltaTime * 0.7;
+        const wp = new THREE.Vector3();
+        m.getWorldPosition(wp);
+        if (wp.distanceTo(player.position) < 3.5) {
+            if (m.parent) m.parent.remove(m);
+            m.geometry.dispose(); m.material.dispose();
+            cometPickups.splice(i, 1);
+            crystalsCollected++;
+            score += 750;
+            playSound('fuel');
+            triggerShake(0.15);
+            updateCrystalHud();
+        }
+    }
+    if (cometPickups.length === 0 && !pickupRespawnPending) {
+        pickupRespawnPending = true;
+        setTimeout(() => { respawnCometPickups(); pickupRespawnPending = false; }, 4000);
+    }
+}
+
+spawnCometPickups();
 
 // --- Sun ---
 const sun = new THREE.Group();
@@ -770,7 +955,7 @@ let cometRotationY = 0;
 const rotationSpeed = 0.02; // Degrees per frame roughly
 
 // Section Breaking Logic
-function breakCometSection() {
+function breakCometSection(byPlayer = false) {
     //eject a piece of the comet
     console.log("Comet Break Logic Triggered...");
     // Find an active section
@@ -838,6 +1023,14 @@ function breakCometSection() {
     sectionToBreak.userData.isBreaking = true;
 
     triggerShake(3.5);
+
+    // W4 input #2: player-triggered mining rewards score/state (auto-breaks do not).
+    if (byPlayer) {
+        chunksMined++;
+        score += 300;
+        if (typeof updateCrystalHud === 'function') updateCrystalHud();
+        triggerMilestoneEffect('CHUNK MINED', 300);
+    }
 }
 
 
@@ -1086,6 +1279,44 @@ const planetDataOortCloud = [
 
 const planetData = (journeyType === 'tour' || journeyType === 'reverse-tour') ? planetDataTour : (journeyType === 'oort-cloud' ? planetDataOortCloud : planetDataNormal);
 
+// --- W5: per-journey camera framing + speed profile ---
+const journeyProfiles = {
+    'normal':       { camDist: 4,  camHeight: 0.30, worldSpeedMult: 1,   debrisSpeedMult: 1,  debrisInterval: 1.2, orbitColor: 0x33ff88, label: 'Inner Planets' },
+    'tour':         { camDist: 6,  camHeight: 0.45, worldSpeedMult: 2,   debrisSpeedMult: 12, debrisInterval: 0.7, orbitColor: 0x33ffdd, label: 'Grand Tour' },
+    'reverse-tour': { camDist: 6,  camHeight: 0.45, worldSpeedMult: 2,   debrisSpeedMult: 8,  debrisInterval: 0.9, orbitColor: 0xffcc33, label: 'Reverse Tour' },
+    'oort-cloud':   { camDist: 9,  camHeight: 0.60, worldSpeedMult: 1.5, debrisSpeedMult: 3,  debrisInterval: 1.6, orbitColor: 0x66aaff, label: 'Oort Cloud' },
+};
+const activeProfile = journeyProfiles[journeyType] || journeyProfiles['normal'];
+console.log('W5: active journey profile:', activeProfile.label);
+
+// W5: draw an orbit ring scaled to the active dataset's outermost planet, in the cosmicRoot
+// (solar-system) frame, coloured per journey. Makes the chosen trajectory read clearly.
+function initOrbitPath() {
+    const realPlanets = planetData.filter(p => !p.isBelt && p.a);
+    const maxA = realPlanets.length ? Math.max(...realPlanets.map(p => p.a)) : 20000;
+    const aa = maxA * 1.15;
+    const ecc = 0.35;
+    const b = aa * Math.sqrt(1 - ecc * ecc);
+    const incl = 0.34;
+    const pts = [];
+    for (let i = 0; i <= maxOrbitPoints; i++) {
+        const th = (i / maxOrbitPoints) * Math.PI * 2;
+        const x = Math.cos(th) * aa - aa * ecc; // shift so a focus sits near the sun/origin
+        const z = Math.sin(th) * b;
+        const y = Math.sin(th) * Math.sin(incl) * b * 0.35;
+        pts.push(new THREE.Vector3(x, y, z));
+    }
+    orbitPathPoints = pts;
+    if (cometOrbitLine) {
+        cometOrbitLine.geometry.dispose();
+        cometOrbitLine.geometry = new THREE.BufferGeometry().setFromPoints(pts);
+        cometOrbitLine.visible = true;
+    }
+    orbitLineMaterial.color.setHex(activeProfile.orbitColor);
+}
+initOrbitPath();
+showCometPath = true;
+
 // SDGB-33: Assign rotational speeds based on real-world relative speeds
 const planetRotationSpeeds = {
     'Mercury': 0.05,
@@ -1295,6 +1526,38 @@ optionsMenuContainer.appendChild(graphicsOptionsPanel); // Append to the new con
     if (level === 'LOW') btn.style.background = 'rgba(255,255,255,0.3)';
     graphicsOptionsPanel.appendChild(btn);
 });
+
+// --- W3: Comet Detail toggle (rebuilds comet geometry / triangle budget) ---
+const cometDetailContainer = document.createElement('div');
+cometDetailContainer.style.display = 'flex';
+cometDetailContainer.style.flexDirection = 'column';
+cometDetailContainer.style.gap = '4px';
+cometDetailContainer.style.padding = '5px 0';
+const cometDetailLabel = document.createElement('span');
+cometDetailLabel.innerHTML = 'Comet Detail:';
+cometDetailLabel.style.fontSize = '12px';
+cometDetailLabel.style.color = 'white';
+cometDetailContainer.appendChild(cometDetailLabel);
+const cometDetailSelect = document.createElement('select');
+cometDetailSelect.style.padding = '4px';
+cometDetailSelect.style.background = 'rgba(0,0,0,0.7)';
+cometDetailSelect.style.color = 'white';
+cometDetailSelect.style.border = '1px solid white';
+cometDetailSelect.style.borderRadius = '3px';
+cometDetailSelect.style.cursor = 'pointer';
+[['Low (fast)', 32], ['Medium', 48], ['High', 64]].forEach(([lbl, seg]) => {
+    const o = document.createElement('option');
+    o.value = String(seg);
+    o.innerHTML = lbl;
+    if (seg === cometDetailSegments) o.selected = true;
+    cometDetailSelect.appendChild(o);
+});
+cometDetailSelect.addEventListener('change', (e) => {
+    e.stopPropagation();
+    if (typeof rebuildComet === 'function') rebuildComet(parseInt(e.target.value, 10));
+});
+cometDetailContainer.appendChild(cometDetailSelect);
+graphicsOptionsPanel.appendChild(cometDetailContainer);
 
 // --- Performance Stats Toggle (SDGF-75) ---
 const statsToggleContainer = document.createElement("div");
@@ -1519,6 +1782,8 @@ const playerMovement = {
     backward: false,
     left: false,
     right: false,
+    strafeLeft: false,
+    strafeRight: false,
     jump: false,
 };
 
@@ -1529,7 +1794,7 @@ let previousMouseY = 0;
 let cameraOrbitYaw = 0;   // Horizontal rotation
 let cameraOrbitPitch = 0; // Vertical rotation (limited)
 // --- Refined Camera Parameters ---
-let cameraDistance = 4;
+let cameraDistance = activeProfile.camDist; // W5: per-journey follow distance
 const minZoom = -5.5;   // Allows you to get much closer
 const maxZoom = 200;
 const zoomSensitivity = 5.5;
@@ -1567,12 +1832,17 @@ let isInSaucer = false;
 // Keyboard controls
 document.addEventListener('keydown', (event) => {
     const key = event.key.toLowerCase();
+    // W2: first thrust launches the comet off its home world.
+    if (gamePhase === 'intro' && (key === ' ' || key === 'w' || key === 'arrowup')) { launchRun(); }
     if (key === 'a' || key === 'arrowleft') { playerMovement.left = true; playerMovement.moving = true; }
     if (key === 'd' || key === 'arrowright') { playerMovement.right = true;playerMovement.moving = true; }
     if (key === 'w' || key === 'arrowup') { playerMovement.forward = true;playerMovement.moving = true; }
     if (key === 's' || key === 'arrowdown') { playerMovement.backward = true;playerMovement.moving = true; }
+    // W4 input #1: dedicated lateral strafe (independent of facing), keys Q / E.
+    if (key === 'q') { playerMovement.strafeLeft = true; playerMovement.moving = true; }
+    if (key === 'e') { playerMovement.strafeRight = true; playerMovement.moving = true; }
     if (key === ' ') { playerMovement.jump = true; playerMovement.moving = true; }
-        if (key === 'b') { breakCometSection(); }
+        if (key === 'b') { breakCometSection(true); }
     if (key === 'v') {
         showCometPath = !showCometPath;
         cometOrbitLine.visible = showCometPath;
@@ -1593,6 +1863,8 @@ document.addEventListener('keyup', (event) => {
     if (key === 'd' || key === 'arrowright') { playerMovement.right = false; playerMovement.moving = false; }
     if (key === 'w' || key === 'arrowup') { playerMovement.forward = false; playerMovement.moving = false; }
     if (key === 's' || key === 'arrowdown') { playerMovement.backward = false; playerMovement.moving = false; }
+    if (key === 'q') { playerMovement.strafeLeft = false; }
+    if (key === 'e') { playerMovement.strafeRight = false; }
     if (key === ' ') { playerMovement.jump = false; playerMovement.moving = false; }
     if (key === 'shift') { playerMovement.sprinting = false;}
 });
@@ -1680,6 +1952,8 @@ function updatePlayerPosition(deltaTime) {
     if (playerMovement.backward) moveIntent.sub(forwardProj);
     if (playerMovement.left) moveIntent.sub(rightProj);
     if (playerMovement.right) moveIntent.add(rightProj);
+    if (playerMovement.strafeLeft) moveIntent.sub(rightProj);   // W4 input #1
+    if (playerMovement.strafeRight) moveIntent.add(rightProj);  // W4 input #1
     if (moveIntent.lengthSq() > 0.001) moveIntent.normalize();
 
     // 6. Apply Local Acceleration
@@ -2034,7 +2308,7 @@ const planetManager = {
         this.orbitalTime += (deltaTime * timeScale * 0.1) * 60 * 60 * 24 * 365.25;
     
         // SDGF-25: Move the celestial sphere (cosmicRoot) instead of the comet
-        const speedMultiplier = (journeyType === 'tour' || journeyType === 'reverse-tour') ? 2 : 1;
+        const speedMultiplier = activeProfile.worldSpeedMult; // W5: per-journey world speed
         const currentSpeed = timeScale * speedMultiplier;
         
         // Initial cosmicRoot position to start outside Neptune
@@ -2130,7 +2404,7 @@ window.addEventListener('resize', () => {
 const debrisManager = {
     debris: [],
     spawnTimer: 0,
-    spawnInterval: 1.2, // Faster spawning
+    spawnInterval: activeProfile.debrisInterval, // W5: per-journey spawn cadence
 
     spawnDebris: function() {
         const isShard = Math.random() > 0.7; // 30% chance for fast shards
@@ -2173,7 +2447,7 @@ const debrisManager = {
         const timeScale = Math.pow(10, timeScaleExponent);
         // SDGF-25: Debris velocity is now relative to the stationary comet origin.
         // We subtract the game speed from the Z velocity so they drift back as they move.
-        const speedMultiplier = (journeyType === 'tour' || journeyType === 'reverse-tour') ? 15 : 1;
+        const speedMultiplier = activeProfile.debrisSpeedMult; // W5: per-journey debris speed
         const currentSpeed = timeScale * speedMultiplier;
         const drift = new THREE.Vector3(0, 0, -currentSpeed);
 
@@ -2271,6 +2545,57 @@ const cometDebugEnd = () => {
     console.log("--- FRAME END ---");
 };
 
+// --- W2: Launch-from-planet intro state ---
+let worldSpawned = false;
+let launchEaseActive = false;
+let launchEaseT = 0;
+const LAUNCH_EASE_DURATION = 2.2;
+
+// Launch prompt UI (shown only during the 'intro' phase; styled by #launch-prompt in style.css)
+const launchPrompt = document.createElement('div');
+launchPrompt.id = 'launch-prompt';
+launchPrompt.style.display = 'none';
+launchPrompt.innerHTML = 'Press <b>SPACE</b> or <b>W</b> to launch';
+document.body.appendChild(launchPrompt);
+
+// Spawn the planetary system once (planetManager spawns lazily on its first update), then stage
+// the home planet beside the comet so every run visibly begins next to a world.
+function ensureWorldSpawned() {
+    if (worldSpawned) return;
+    planetManager.update(0);
+    worldSpawned = true;
+    stageHomePlanet();
+}
+
+function stageHomePlanet() {
+    // The comet is fixed at the origin and cosmicRoot is otherwise never translated, so we offset
+    // cosmicRoot to bring the first real planet (the one the run first approaches) up beside us.
+    const home = planetManager.planets.find((p) => !p.isBelt && p.mesh);
+    if (!home) return;
+    const homeData = planetData.find((p) => p.name === home.name) || {};
+    const homeSize = homeData.size || 100;
+    const homeWorld = new THREE.Vector3();
+    home.mesh.getWorldPosition(homeWorld);
+    // Place the home world in front of + slightly below the comet, a safe distance off its surface.
+    const homeDist = homeSize * 2.2 + cometRadius + 120;
+    const desired = new THREE.Vector3(homeSize * 0.6, -homeSize * 0.4, -homeDist);
+    cosmicRoot.position.add(desired.clone().sub(homeWorld));
+    // Wide "on the launch pad" framing; eased back to the follow distance on thrust.
+    cameraDistance = Math.min(maxZoom, cometRadius + homeSize * 0.6 + 40);
+    if (milestoneElement) milestoneElement.innerHTML = `Home: ${home.name} — ready to launch`;
+    if (launchPrompt) launchPrompt.style.display = 'block';
+}
+
+function launchRun() {
+    if (gamePhase !== 'intro') return;
+    gamePhase = 'playing';
+    launchEaseActive = true;
+    launchEaseT = 0;
+    if (launchPrompt) launchPrompt.style.display = 'none';
+    playSound('jump');
+    console.log('W2: launch! Departing home world.');
+}
+
 // --- Animation Loop ---
 function animate() {
     //cometDebugStart();
@@ -2321,9 +2646,19 @@ function animate() {
     const deltaTime = clock.getDelta();
     const scaledDeltaTime = deltaTime * timeScale;
 
-    if (planetManager.gameState === 'playing') {
+    if (gamePhase === 'menu') {
+        // W1: sim paused behind the start overlay; the comet still renders via the camera block below.
+    } else if (gamePhase === 'intro') {
+        // W2: staged beside the home planet, waiting for thrust. Let the dino settle on the surface
+        // and keep shadows/idle animation alive, but do NOT advance orbital time, scoring, or debris.
+        ensureWorldSpawned();
+        updatePlayerPosition(deltaTime);
+        if (player && mixer) { transitionTo(idleAction, 1.5); mixer.update(deltaTime); }
+        updateSunShadows();
+        comet.rotation.set(0, 0, 0);
+    } else if (gamePhase === 'playing' && planetManager.gameState === 'playing') {
         // SDGF-64: Comet Orbit Modeling
-        
+
         // Move comet first so physics conversions are accurate
         planetManager.update(scaledDeltaTime);
 
@@ -2349,6 +2684,7 @@ function animate() {
         if (cometTail) cometTail.update(scaledDeltaTime);
         debrisManager.update(scaledDeltaTime);
         updateCometSections(scaledDeltaTime);
+        updateCometPickups(deltaTime); // W4: crystal collection
         // if (stars) stars.update(deltaTime, camera); // Temporarily disabled for debugging Milky Way
 
         // Spawn fuel occasionally
@@ -2425,10 +2761,17 @@ function animate() {
     // We combine the surface-basis with the comet's own rotation.
     baseOffset.applyQuaternion(basisQuat);
 
+    // W2: camera ease-in after launch — pull from the wide launch framing back to the follow distance.
+    if (launchEaseActive) {
+        launchEaseT += deltaTime;
+        cameraDistance = THREE.MathUtils.lerp(cameraDistance, activeProfile.camDist, Math.min(1, deltaTime * 1.8));
+        if (launchEaseT >= LAUNCH_EASE_DURATION) launchEaseActive = false;
+    }
+
     // 4. Calculate final position
     const finalCameraDistance = cameraDistance;
     const targetCameraPosition = (player ? player.position.clone() : new THREE.Vector3(0, cometRadius * 2, 0))
-        .add(radialUp.clone().multiplyScalar(finalCameraDistance * 0.3)) // Slight height boost
+        .add(radialUp.clone().multiplyScalar(finalCameraDistance * activeProfile.camHeight)) // W5: per-journey height boost
         .add(baseOffset.multiplyScalar(finalCameraDistance));
 
     // 5. Smoothly move and look
@@ -2534,4 +2877,5 @@ function animate() {
 });
 
 animate();
+// W3-W5 (caves + on-comet interactivity + trajectory polish) applied.
 
