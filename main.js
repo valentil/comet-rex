@@ -1281,10 +1281,10 @@ const planetData = (journeyType === 'tour' || journeyType === 'reverse-tour') ? 
 
 // --- W5: per-journey camera framing + speed profile ---
 const journeyProfiles = {
-    'normal':       { camDist: 4,  camHeight: 0.30, worldSpeedMult: 1,   debrisSpeedMult: 1,  debrisInterval: 1.2, orbitColor: 0x33ff88, label: 'Inner Planets' },
-    'tour':         { camDist: 6,  camHeight: 0.45, worldSpeedMult: 2,   debrisSpeedMult: 12, debrisInterval: 0.7, orbitColor: 0x33ffdd, label: 'Grand Tour' },
-    'reverse-tour': { camDist: 6,  camHeight: 0.45, worldSpeedMult: 2,   debrisSpeedMult: 8,  debrisInterval: 0.9, orbitColor: 0xffcc33, label: 'Reverse Tour' },
-    'oort-cloud':   { camDist: 9,  camHeight: 0.60, worldSpeedMult: 1.5, debrisSpeedMult: 3,  debrisInterval: 1.6, orbitColor: 0x66aaff, label: 'Oort Cloud' },
+    'normal':       { camDist: 4,  camHeight: 0.30, worldSpeedMult: 1,   debrisSpeedMult: 1,  debrisInterval: 1.2, orbitColor: 0x33ff88, label: 'Inner Planets', home: 'Neptune' },
+    'tour':         { camDist: 6,  camHeight: 0.45, worldSpeedMult: 2,   debrisSpeedMult: 12, debrisInterval: 0.7, orbitColor: 0x33ffdd, label: 'Grand Tour',   home: 'Earth' },
+    'reverse-tour': { camDist: 6,  camHeight: 0.45, worldSpeedMult: 2,   debrisSpeedMult: 8,  debrisInterval: 0.9, orbitColor: 0xffcc33, label: 'Reverse Tour', home: 'Mercury' },
+    'oort-cloud':   { camDist: 9,  camHeight: 0.60, worldSpeedMult: 1.5, debrisSpeedMult: 3,  debrisInterval: 1.6, orbitColor: 0x66aaff, label: 'Oort Cloud',   home: 'Uranus' },
 };
 const activeProfile = journeyProfiles[journeyType] || journeyProfiles['normal'];
 console.log('W5: active journey profile:', activeProfile.label);
@@ -2345,9 +2345,16 @@ const planetManager = {
                 this.debugLogged = true;
             }
         // } 
-        // else {
-        //     cosmicRoot.position.z -= currentSpeed * deltaTime;
         // }
+
+        // ── BUG FIX (comet looked parked): the comet now actually TRAVELS. Previously the
+        //    Keplerian updateCometOrbit() call was commented out AND this drift was disabled, so
+        //    only the planets orbited while the comet sat at the origin. We cruise the world past
+        //    the comet every frame, scaled per-journey via worldSpeedMult.
+        //    TUNING: raise/lower COMET_CRUISE_BASE for faster/slower travel. If the world scrolls
+        //    the WRONG way (planets recede instead of approach), flip the sign below (+= → -=).
+        const COMET_CRUISE_BASE = 1400; // world units / second at worldSpeedMult = 1
+        cosmicRoot.position.z += COMET_CRUISE_BASE * speedMultiplier * deltaTime;
 
         let closestPlanet = null;
         let minDist = Infinity;
@@ -2569,8 +2576,11 @@ function ensureWorldSpawned() {
 
 function stageHomePlanet() {
     // The comet is fixed at the origin and cosmicRoot is otherwise never translated, so we offset
-    // cosmicRoot to bring the first real planet (the one the run first approaches) up beside us.
-    const home = planetManager.planets.find((p) => !p.isBelt && p.mesh);
+    // cosmicRoot to bring the home planet for THIS journey up beside us. Previously this always
+    // grabbed the first non-belt planet (Neptune) for every trajectory — hence "always Neptune".
+    const homeName = activeProfile.home;
+    const home = planetManager.planets.find((p) => p.name === homeName && !p.isBelt && p.mesh)
+              || planetManager.planets.find((p) => !p.isBelt && p.mesh);
     if (!home) return;
     const homeData = planetData.find((p) => p.name === home.name) || {};
     const homeSize = homeData.size || 100;
