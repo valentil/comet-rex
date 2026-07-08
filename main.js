@@ -573,7 +573,12 @@ function getSharedBumpTex() {
 
 
 // Comet
-const cometRadius = 40; // W3: bigger, more detailed body (was 30)
+// P3: comet SIZE is an independent control (S/M/L/XL) layered on top of the W3 detail toggle.
+// The effective radius is BASE_COMET_RADIUS * cometSizeScale; applyCometSize() rescales the
+// body, snow core, caves, pickups and camera framing together so everything stays aligned.
+let cometSizeScale = 1;                 // P3: 1 = Medium (default)
+const BASE_COMET_RADIUS = 40;           // W3 base radius (was 30 pre-W3)
+let cometRadius = BASE_COMET_RADIUS * cometSizeScale; // W3: bigger, more detailed body
 window.cometRadius = cometRadius; // Share for CometTail.js
 // SDGF-78: Inverse gravity state for comet break pieces
 window.cometCurrentVelocity = new THREE.Vector3(0, 0, 0);
@@ -600,6 +605,8 @@ cometCaves = [
     { dir: new THREE.Vector3(-0.70,-0.20, 0.60).normalize(), radius: 0.50, depth: 10 },
     { dir: new THREE.Vector3( 0.10,-0.85,-0.45).normalize(), radius: 0.48, depth: 9  },
 ];
+// P3: remember base cave depths so applyCometSize() can rescale pockets proportionally.
+const BASE_CAVE_DEPTHS = cometCaves.map(c => c.depth);
 
 // W3: comet-detail quality toggle. Segments/chunk drives triangle count; a full sphere is
 // generated per chunk and non-owned verts collapse to the origin (degenerate), so segment
@@ -702,6 +709,17 @@ const cometLight2 = new THREE.PointLight(0xffffff, 0.5, 160); // W3: range bumpe
 cometLight2.position.set(0, 60, 0); // Moved up for larger comet
 comet.add(cometLight2);
 
+// --- P4: additive rim glow around the comet (adds an icy atmosphere/subsurface read
+// without touching the body material Lewis likes; ~1 draw call, BackSide, no depth write). ---
+const cometGlowMat = new THREE.MeshBasicMaterial({
+    color: 0x3f7fd0, transparent: true, opacity: 0.16,
+    side: THREE.BackSide, blending: THREE.AdditiveBlending, depthWrite: false
+});
+// Geometry built at the BASE radius; applyCometSize() rescales via cometGlow.scale.
+const cometGlow = new THREE.Mesh(new THREE.SphereGeometry(BASE_COMET_RADIUS * 1.18, 24, 24), cometGlowMat);
+cometGlow.scale.setScalar(cometSizeScale);
+comet.add(cometGlow);
+
 // --- W3: rebuild comet at a new detail level (quality toggle) ---
 function rebuildComet(segments) {
     cometDetailSegments = segments;
@@ -738,6 +756,20 @@ document.body.appendChild(crystalHud);
 function updateCrystalHud() {
     crystalHud.innerHTML = `Crystals: ${crystalsCollected} | Mined: ${chunksMined}`;
 }
+
+// --- P5: small persistent keys legend (HUD clarity, incl. the new G/V debug bindings) ---
+const keysLegend = document.createElement('div');
+keysLegend.style.position = 'absolute';
+keysLegend.style.right = '10px';
+keysLegend.style.bottom = '10px';
+keysLegend.style.color = 'rgba(180,220,255,0.65)';
+keysLegend.style.fontFamily = "'Courier New', Courier, monospace";
+keysLegend.style.fontSize = '11px';
+keysLegend.style.textAlign = 'right';
+keysLegend.style.pointerEvents = 'none';
+keysLegend.style.zIndex = '1200';
+keysLegend.innerHTML = 'WASD move &middot; Q/E strafe &middot; B mine<br>V path &middot; G world-state';
+document.body.appendChild(keysLegend);
 
 // Local surface point (comet space) for a given outward direction.
 function surfacePoint(dir) {
@@ -816,10 +848,66 @@ function updateCometPickups(deltaTime) {
 
 spawnCometPickups();
 
+// --- P3: comet SIZE control (independent of the W3 detail toggle) ---
+// Rescales radius, colliders (radius is read live by the physics/lose/camera checks),
+// caves, pickups and camera framing together, then rebuilds the body at the current
+// detail level. Reported in the world-state text (window.getWorldState()).
+const COMET_SIZE_PRESETS = { S: 0.6, M: 1.0, L: 1.6, XL: 2.4 };
+function applyCometSize(scale) {
+    cometSizeScale = scale;
+    cometRadius = BASE_COMET_RADIUS * scale;
+    window.cometRadius = cometRadius; // CometTail.js reads this
+    // Keep cave pockets proportional to the body.
+    for (let i = 0; i < cometCaves.length; i++) cometCaves[i].depth = BASE_CAVE_DEPTHS[i] * scale;
+    // Snow core scales with the shell.
+    if (snowCore) {
+        snowCore.geometry.dispose();
+        snowCore.geometry = new THREE.SphereGeometry(cometRadius - (cometRadius / 2), 64, 64);
+    }
+    // Rebuild the displaced-sphere chunks + pickups at the new radius (detail level preserved).
+    rebuildComet(cometDetailSegments);
+    if (typeof cometGlow !== 'undefined' && cometGlow) cometGlow.scale.setScalar(cometSizeScale); // P4 rim glow
+    // Camera follow distance tracks size so framing stays consistent.
+    cameraDistance = followDist();
+    if (typeof rebuildCometPath === 'function') rebuildCometPath();
+    console.log(`P3: comet size ${scale}x -> radius ${cometRadius}`);
+}
+window.applyCometSize = applyCometSize;
+// Per-journey follow distance, scaled by comet size (used by launch ease + size changes).
+function followDist() { return activeProfile.camDist * cometSizeScale; }
+
 // --- Sun ---
 const sun = new THREE.Group();
 sun.position.set(0, 0, 0); // Sun is at the center
 cosmicRoot.add(sun);
+
+// --- P4: distant nebula billboards (faint additive colour in the deep field). Two sprites,
+// parented to cosmicRoot so they sit in the solar-system frame far off the route. Additive +
+// no depth write keeps them soft; adds atmosphere without touching the Milky Way skybox. ---
+function makeNebulaTexture(r, g, b) {
+    const c = document.createElement('canvas'); c.width = c.height = 256;
+    const nctx = c.getContext('2d');
+    const grad = nctx.createRadialGradient(128, 128, 0, 128, 128, 128);
+    grad.addColorStop(0, `rgba(${r},${g},${b},0.55)`);
+    grad.addColorStop(0.45, `rgba(${r},${g},${b},0.16)`);
+    grad.addColorStop(1, `rgba(${r},${g},${b},0)`);
+    nctx.fillStyle = grad; nctx.fillRect(0, 0, 256, 256);
+    return new THREE.CanvasTexture(c);
+}
+[
+    { pos: [-600000, 120000, -400000], col: [120, 90, 200], scale: 900000 },
+    { pos: [500000, -160000, 700000], col: [40, 120, 180], scale: 1100000 }
+].forEach(n => {
+    const mat = new THREE.SpriteMaterial({
+        map: makeNebulaTexture(n.col[0], n.col[1], n.col[2]),
+        transparent: true, opacity: 0.5, blending: THREE.AdditiveBlending,
+        depthWrite: false, fog: false
+    });
+    const s = new THREE.Sprite(mat);
+    s.position.set(n.pos[0], n.pos[1], n.pos[2]);
+    s.scale.set(n.scale, n.scale, 1);
+    cosmicRoot.add(s);
+});
 
 // Sun Visuals
 const sunGeometry = new THREE.SphereGeometry(150, 64, 64);
@@ -1343,6 +1431,12 @@ planetData.forEach(planet => {
     } else {
         planet.rotationSpeed = 0.1; // Default speed if not found
     }
+    // P1: seed each planet's starting orbital angle deterministically from the pure world
+    // model (window.CometWorldModel) instead of Math.random(), so the live game and the Node
+    // world-model harness agree on planet positions — a single source of world-model truth.
+    if (!planet.isBelt && window.CometWorldModel) {
+        planet.startAngle = window.CometWorldModel.planetAngle0(journeyType, planet.name);
+    }
     if (planet.moons) {
         planet.moons.forEach(moon => {
             if (planetRotationSpeeds[moon.name]) {
@@ -1558,6 +1652,39 @@ cometDetailSelect.addEventListener('change', (e) => {
 });
 cometDetailContainer.appendChild(cometDetailSelect);
 graphicsOptionsPanel.appendChild(cometDetailContainer);
+
+// --- P3: Comet Size control (independent of the detail toggle) ---
+const cometSizeContainer = document.createElement('div');
+cometSizeContainer.style.display = 'flex';
+cometSizeContainer.style.flexDirection = 'column';
+cometSizeContainer.style.gap = '4px';
+cometSizeContainer.style.padding = '5px 0';
+const cometSizeLabel = document.createElement('span');
+cometSizeLabel.innerHTML = 'Comet Size:';
+cometSizeLabel.style.fontSize = '12px';
+cometSizeLabel.style.color = 'white';
+cometSizeContainer.appendChild(cometSizeLabel);
+const cometSizeSelect = document.createElement('select');
+cometSizeSelect.style.padding = '4px';
+cometSizeSelect.style.background = 'rgba(0,0,0,0.7)';
+cometSizeSelect.style.color = 'white';
+cometSizeSelect.style.border = '1px solid white';
+cometSizeSelect.style.borderRadius = '3px';
+cometSizeSelect.style.cursor = 'pointer';
+[['Small', 'S'], ['Medium', 'M'], ['Large', 'L'], ['Extra Large', 'XL']].forEach(([lbl, key]) => {
+    const o = document.createElement('option');
+    o.value = key;
+    o.innerHTML = `${lbl} (${COMET_SIZE_PRESETS[key].toFixed(1)}x)`;
+    if (COMET_SIZE_PRESETS[key] === cometSizeScale) o.selected = true;
+    cometSizeSelect.appendChild(o);
+});
+cometSizeSelect.addEventListener('change', (e) => {
+    e.stopPropagation();
+    const scale = COMET_SIZE_PRESETS[e.target.value] || 1;
+    if (typeof applyCometSize === 'function') applyCometSize(scale);
+});
+cometSizeContainer.appendChild(cometSizeSelect);
+graphicsOptionsPanel.appendChild(cometSizeContainer);
 
 // --- Performance Stats Toggle (SDGF-75) ---
 const statsToggleContainer = document.createElement("div");
@@ -1843,9 +1970,16 @@ document.addEventListener('keydown', (event) => {
     if (key === 'e') { playerMovement.strafeRight = true; playerMovement.moving = true; }
     if (key === ' ') { playerMovement.jump = true; playerMovement.moving = true; }
         if (key === 'b') { breakCometSection(true); }
+    // P1: G toggles the textual world-state debug panel.
+    if (key === 'g') {
+        showWorldState = !showWorldState;
+        updateWorldStatePanel();
+        console.log(`World-state panel: ${showWorldState ? 'ON' : 'OFF'}`);
+    }
     if (key === 'v') {
         showCometPath = !showCometPath;
         cometOrbitLine.visible = showCometPath;
+        if (typeof setCometPathVisible === 'function') setCometPathVisible(showCometPath); // P2 path preview
         console.log(`Comet Orbital Path: ${showCometPath ? 'ON' : 'OFF'}`);
         showPlanetLabels = !showPlanetLabels;
         console.log(`Planet Labels: ${showPlanetLabels ? 'ON' : 'OFF'}`);
@@ -2347,14 +2481,25 @@ const planetManager = {
         // } 
         // }
 
-        // ── BUG FIX (comet looked parked): the comet now actually TRAVELS. Previously the
-        //    Keplerian updateCometOrbit() call was commented out AND this drift was disabled, so
-        //    only the planets orbited while the comet sat at the origin. We cruise the world past
-        //    the comet every frame, scaled per-journey via worldSpeedMult.
-        //    TUNING: raise/lower COMET_CRUISE_BASE for faster/slower travel. If the world scrolls
-        //    the WRONG way (planets recede instead of approach), flip the sign below (+= → -=).
-        const COMET_CRUISE_BASE = 1400; // world units / second at worldSpeedMult = 1
-        cosmicRoot.position.z += COMET_CRUISE_BASE * speedMultiplier * deltaTime;
+        // ── P6: STEERED weaving grand tour (replaces the old straight z-cruise). ──
+        //    The comet holds a cruise speed but turns its velocity (bounded turning
+        //    radius) toward the CURRENT position of its next target planet; planets
+        //    keep orbiting every step, so the path curves to fly close by each moving
+        //    planet in turn, then retargets the next. We advance the PURE world model
+        //    one step and drive cosmicRoot from it — the comet stays pinned at the
+        //    render origin while the whole solar system weaves past it
+        //    (cosmicRoot = -cometSolarPosition). This is the SAME stepState() the Node
+        //    harness (sim/harness.js) validates for a close flyby of every planet, so
+        //    the game and the tooling share one source of world-model truth.
+        //    `deltaTime` here is the scaled world dt, matching the planet-mesh updates
+        //    below and the worldElapsed clock, so steering + orbits stay in lockstep.
+        if (worldSim && window.CometWorldModel) {
+            window.CometWorldModel.stepState(worldSim, deltaTime);
+            cosmicRoot.position.set(worldSim.cosmicRoot.x, worldSim.cosmicRoot.y, worldSim.cosmicRoot.z);
+        } else {
+            const COMET_CRUISE_BASE = 1400; // fallback straight cruise if the module failed to load
+            cosmicRoot.position.z += COMET_CRUISE_BASE * speedMultiplier * deltaTime;
+        }
 
         let closestPlanet = null;
         let minDist = Infinity;
@@ -2554,6 +2699,8 @@ const cometDebugEnd = () => {
 
 // --- W2: Launch-from-planet intro state ---
 let worldSpawned = false;
+// P6: the live steered world-model state (created at launch, stepped each frame).
+let worldSim = null;
 let launchEaseActive = false;
 let launchEaseT = 0;
 const LAUNCH_EASE_DURATION = 2.2;
@@ -2603,8 +2750,120 @@ function launchRun() {
     launchEaseT = 0;
     if (launchPrompt) launchPrompt.style.display = 'none';
     playSound('jump');
+
+    // P6: spin up the steered world model, seeded to the EXACT staged position so the
+    // comet neither jumps nor changes size at launch; it then curves toward its first
+    // target planet (clearly departing the home world) and weaves on from there.
+    if (window.CometWorldModel) {
+        const M = window.CometWorldModel;
+        worldSim = M.createInitialState(journeyType, { sizeScale: cometSizeScale, cometRadius: cometRadius });
+        worldSim.cometPos = { x: -cosmicRoot.position.x, y: -cosmicRoot.position.y, z: -cosmicRoot.position.z };
+        worldSim.cosmicRoot = { x: cosmicRoot.position.x, y: cosmicRoot.position.y, z: cosmicRoot.position.z };
+        M.pickTarget(worldSim); // re-aim from the true staged position
+        if (worldSim.target) {
+            const tp = M.planetLocalPos(journeyType, worldSim.target, 0);
+            const dx = tp.x - worldSim.cometPos.x, dy = tp.y - worldSim.cometPos.y, dz = tp.z - worldSim.cometPos.z;
+            const L = Math.hypot(dx, dy, dz) || 1;
+            worldSim.cometVel = { x: dx / L * worldSim.speed, y: dy / L * worldSim.speed, z: dz / L * worldSim.speed };
+        }
+        console.log('P6: steered tour engaged — first target ' + (worldSim.target || 'none'));
+    }
     console.log('W2: launch! Departing home world.');
 }
+
+// ===========================================================================
+// P1: textual world-state validation wired into the LIVE game.
+// The game reads world-model math from the SAME pure module the Node harness
+// uses (window.CometWorldModel, loaded via <script> in index.html). We feed it a
+// snapshot of live state (journey, phase, elapsed, cosmicRoot position, size).
+// ===========================================================================
+let worldElapsed = 0; // accumulated PLAYING time (scaled seconds) — mirrors harness elapsed
+
+function currentWorldState() {
+    if (!window.CometWorldModel) return null;
+    return {
+        journey: journeyType,
+        phase: gamePhase,
+        elapsed: worldElapsed,
+        orbitalTime: planetManager.orbitalTime,
+        sizeScale: cometSizeScale,
+        cometRadius: cometRadius,
+        cosmicRoot: { x: cosmicRoot.position.x, y: cosmicRoot.position.y, z: cosmicRoot.position.z }
+    };
+}
+// Console/tooling hooks: getWorldState() -> JSON, getWorldStateText() -> snapshot string.
+window.getWorldState = function () {
+    const M = window.CometWorldModel, s = currentWorldState();
+    return (M && s) ? M.worldStateJSON(s) : null;
+};
+window.getWorldStateText = function () {
+    const M = window.CometWorldModel, s = currentWorldState();
+    return (M && s) ? M.worldStateText(s) : 'world model unavailable';
+};
+
+// Toggleable on-screen debug text panel (key G). Reads the same pure model.
+const worldStatePanel = document.getElementById('worldstate-panel');
+let showWorldState = false;
+let lastWSUpdate = 0;
+function updateWorldStatePanel() {
+    if (!worldStatePanel) return;
+    worldStatePanel.style.display = showWorldState ? 'block' : 'none';
+    if (!showWorldState) return;
+    const now = (typeof performance !== 'undefined') ? performance.now() : Date.now();
+    if (now - lastWSUpdate < 200) return; // throttle to ~5 Hz
+    lastWSUpdate = now;
+    worldStatePanel.textContent = window.getWorldStateText();
+}
+
+// --- P2: full comet-path preview, computed by the pure model + drawn as a polyline ---
+// The sampled cruise path (solar-frame points) doubles as cosmicRoot-local coordinates, so
+// parenting the line to cosmicRoot makes the comet (render origin) slide along it as the world
+// scrolls. Yellow markers sit where the comet passes each planet (closest-approach along path).
+let cometPathLine = null;
+let cometPathMarkers = [];
+function rebuildCometPath() {
+    const M = window.CometWorldModel;
+    if (!M) return;
+    if (cometPathLine) {
+        if (cometPathLine.parent) cometPathLine.parent.remove(cometPathLine);
+        cometPathLine.geometry.dispose(); cometPathLine.material.dispose(); cometPathLine = null;
+    }
+    cometPathMarkers.forEach(m => {
+        if (m.parent) m.parent.remove(m);
+        m.geometry.dispose(); m.material.dispose();
+    });
+    cometPathMarkers = [];
+
+    const pts = M.cometPathSolar(journeyType, { cometRadius: cometRadius, samples: 64 })
+        .map(p => new THREE.Vector3(p.x, p.y, p.z));
+    const geo = new THREE.BufferGeometry().setFromPoints(pts);
+    const mat = new THREE.LineBasicMaterial({ color: 0xff5599, transparent: true, opacity: 0.85 });
+    cometPathLine = new THREE.Line(geo, mat);
+    cometPathLine.visible = showCometPath;
+    cosmicRoot.add(cometPathLine);
+
+    const summary = M.pathSummary(journeyType, { cometRadius: cometRadius });
+    const markerR = Math.max(cometRadius * 0.6, 40);
+    summary.planetsInPassOrder.forEach(p => {
+        // P6: markers sit at the ACTUAL steered closest-approach point along the
+        // curved path (p.point), not a straight-line projection.
+        const pos = new THREE.Vector3(p.point.x, p.point.y, p.point.z);
+        const mk = new THREE.Mesh(
+            new THREE.SphereGeometry(markerR, 8, 8),
+            new THREE.MeshBasicMaterial({ color: 0xffdd66, transparent: true, opacity: 0.8 })
+        );
+        mk.position.copy(pos);
+        mk.visible = showCometPath;
+        cosmicRoot.add(mk);
+        cometPathMarkers.push(mk);
+    });
+    console.log(`P2: comet path preview rebuilt (${pts.length} pts, ${cometPathMarkers.length} waypoints)`);
+}
+function setCometPathVisible(v) {
+    if (cometPathLine) cometPathLine.visible = v;
+    cometPathMarkers.forEach(m => (m.visible = v));
+}
+rebuildCometPath();
 
 // --- Animation Loop ---
 function animate() {
@@ -2671,6 +2930,7 @@ function animate() {
 
         // Move comet first so physics conversions are accurate
         planetManager.update(scaledDeltaTime);
+        worldElapsed += scaledDeltaTime; // P1: mirror the harness elapsed clock
 
         //updateCometOrbit(scaledDeltaTime);
         // Update physics and player pos
@@ -2745,6 +3005,9 @@ function animate() {
     }
 
 
+    // P1: refresh the on-screen world-state debug panel (self-throttled).
+    updateWorldStatePanel();
+
     // 1. Calculate the 'Up' direction (radial from comet center)
     const radialUp = player ? player.position.clone().sub(comet.position).normalize() : new THREE.Vector3(0, 1, 0);
 
@@ -2774,7 +3037,7 @@ function animate() {
     // W2: camera ease-in after launch — pull from the wide launch framing back to the follow distance.
     if (launchEaseActive) {
         launchEaseT += deltaTime;
-        cameraDistance = THREE.MathUtils.lerp(cameraDistance, activeProfile.camDist, Math.min(1, deltaTime * 1.8));
+        cameraDistance = THREE.MathUtils.lerp(cameraDistance, followDist(), Math.min(1, deltaTime * 1.8)); // P3: size-aware
         if (launchEaseT >= LAUNCH_EASE_DURATION) launchEaseActive = false;
     }
 

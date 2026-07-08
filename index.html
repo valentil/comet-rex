@@ -47,6 +47,7 @@
             </div>
             <p id="start-hint">Then press <b>SPACE</b> or <b>W</b> to launch off your home world.</p>
             <p id="start-controls"><b>WASD</b> move &middot; <b>Q/E</b> strafe &middot; <b>SPACE</b> jump &middot; <b>B</b> mine a chunk &middot; walk into <b>crystals</b> near caves to collect</p>
+            <p id="start-controls"><b>V</b> toggle trajectory path &middot; <b>G</b> toggle world-state readout</p>
         </div>
     </div>
     <div id="stats-panel">
@@ -71,6 +72,12 @@
         }
     </script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/stats.js/r17/stats.min.js"></script>
+    <!-- P1: pure, THREE-free world-model mirror (also runnable in Node via sim/harness.js).
+         Loaded before main.js so the game reads world-model math from window.CometWorldModel,
+         keeping the game and the Node harness a single source of world-model truth. -->
+    <script src="sim/worldmodel.js"></script>
+    <!-- P1: on-screen world-state debug panel (toggle with G). -->
+    <div id="worldstate-panel" style="display:none;"></div>
     <script type="module" src="main.js"></script>
 </body>
 </html>

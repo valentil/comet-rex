@@ -33,7 +33,11 @@ class Planet {
         this.mesh.position.z = -this.distance;
         
         // Orbital parameters
-        this.orbitalAngle = Math.random() * Math.PI * 2;
+        // P1: honour a deterministic start angle seeded by the pure world model (main.js sets
+        // data.startAngle = CometWorldModel.planetAngle0(...)), so the game matches the harness.
+        this.orbitalAngle = (this.data && this.data.startAngle !== undefined)
+            ? this.data.startAngle
+            : Math.random() * Math.PI * 2;
         this.orbitSpeed = 0.05 / (this.data.period || 1);
     }
 

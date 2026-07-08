@@ -154,3 +154,23 @@ html, body {
     #journey-cards { grid-template-columns: 1fr; }
     #start-title { font-size: 44px; }
 }
+
+/* ---- P1: world-state debug panel (toggle with G) ---- */
+#worldstate-panel {
+    position: absolute;
+    left: 10px;
+    bottom: 10px;
+    z-index: 1600;
+    max-width: 46ch;
+    padding: 10px 12px;
+    background: rgba(0, 0, 0, 0.72);
+    border: 1px solid #66ffcc;
+    border-radius: 6px;
+    color: #b8ffe8;
+    font-family: 'Courier New', Courier, monospace;
+    font-size: 11px;
+    line-height: 1.35;
+    white-space: pre;
+    pointer-events: none;
+    text-shadow: 0 0 4px rgba(0, 0, 0, 0.9);
+}

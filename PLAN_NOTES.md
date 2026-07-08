@@ -99,3 +99,133 @@ begins. This avoids a large, error-prone lazy-init refactor of every `planetData
 satisfies the acceptance ("page loads to the menu; each choice starts a run using the matching
 planetData*; no console errors"). Trade-off: choosing a journey costs one page reload rather than an
 in-place swap. Documented as an intentional, low-risk choice.
+
+## Polish round P1–P5 (implementation notes)
+
+### P1 — Textual world-state validation (THE ENABLER)
+- New pure module `sim/worldmodel.js` (THREE-free, UMD): `require()`s in Node and, in the browser,
+  attaches `window.CometWorldModel` (loaded via `<script src="sim/worldmodel.js">` in `index.html`
+  before the `main.js` module). It mirrors the ACTIVE world model (not the dormant Keplerian
+  `updateCometOrbit`): comet pinned at render origin; `comet_solar = -cosmicRoot.position`; straight
+  cruise drift `cosmicRoot.z += COMET_CRUISE_BASE(1400) * worldSpeedMult * dt`; planet circular orbits
+  radius `a`, angle `= startAngle + (0.05/period)*0.1*elapsed` (tour+tourZ locked to 0); staging math
+  mirrored from `stageHomePlanet()` (`comet_solar0 = homeLocal0 - desired`). Exposes
+  `worldStateText()`, `worldStateJSON()`, `createInitialState()/step()`, `nearestPlanet()`,
+  `cometPathSolar()/pathSummary()`, and `planetAngle0()`.
+- Single source of truth: `main.js` seeds each planet's `data.startAngle =
+  CometWorldModel.planetAngle0(journeyType, name)` (was `Math.random()`), and `Planet.js` honours it.
+  So the live game's planet positions match the harness. `window.getWorldState()` /
+  `window.getWorldStateText()` and a toggleable on-screen panel (`#worldstate-panel`, key **G**) read
+  the SAME module from live state (journey, phase, `worldElapsed`, `cosmicRoot.position`, size).
+- `sim/harness.js` steps the model per journey, prints a state trace + full-path summary, and asserts:
+  path length > 0; `distanceTraveled` strictly increasing; `comet_solar.z` strictly decreasing; home
+  world nearest at launch; every nearest entry a real planet; nearest changes ≥ once. `node
+  sim/harness.js` -> RESULT: PASS for all 4 journeys.
+
+### P2 — Full comet path preview
+- `rebuildCometPath()` builds a magenta polyline from `CometWorldModel.cometPathSolar(journeyType)`
+  (64 samples of the cruise line) + yellow closest-approach waypoint markers per planet, parented to
+  `cosmicRoot` (so the comet at the origin slides along it). Toggled with the existing **V** key
+  alongside the decorative W5 orbit ring. The same pass-order/lengths appear in the world-state text.
+
+### P3 — Comet size options
+- `cometRadius` is now `let cometRadius = BASE_COMET_RADIUS(40) * cometSizeScale`. `applyCometSize(scale)`
+  (presets S/M/L/XL = 0.6/1.0/1.6/2.4, in Graphics Options) rescales radius, cave depths
+  (`BASE_CAVE_DEPTHS`), snow core, rim glow, rebuilds the body+pickups via `rebuildComet`, refreshes the
+  path preview, and updates camera framing via `followDist() = activeProfile.camDist * cometSizeScale`.
+  Colliders/lose-check/camera-clip read `cometRadius` live so they track size. Size is reported in the
+  world-state text/JSON (`cometRadius`, `sizeScale`). (Saucer easter-egg distance is a load-time const
+  and does not rescale — intentional, negligible.)
+
+### P4 — More detail (additive, within budget)
+- Comet: additive `BackSide` rim glow sphere (~1 draw call, scales with size). Scene: two additive
+  nebula billboard sprites far out in `cosmicRoot` (procedural radial-gradient canvas textures, ~2 draw
+  calls). Body material / Milky Way skybox untouched (Lewis's look preserved).
+
+### P5 — Polish grab-bag
+- Persistent keys legend (bottom-right) + start-screen controls updated for V/G. World-state panel
+  itself is the main HUD-clarity win. None of P5 touches world-model math (harness unaffected).
+
+## P6 — Weaving grand-tour trajectory (steering / pursuit model)
+
+**What changed.** The straight z-cruise is gone. In the pure `sim/worldmodel.js` the comet now holds a
+constant cruise speed but *steers*: each step it turns its velocity toward the CURRENT position of its
+next target planet, with a bounded turning radius, so it curves to fly close by each moving planet in
+turn, then retargets. Planets keep orbiting every step. The world-anchor model is unchanged
+(`cosmicRoot = -cometSolarPosition`; comet pinned at the render origin), and the game runs the SAME
+`stepState()` the harness validates — single source of truth.
+
+**The model, precisely (all in `sim/worldmodel.js`):**
+- **State** (`createInitialState` / `stepState`): `cometPos`, `cometVel` (|v| = cruise speed), `target`,
+  `visited{}`, per-planet `closest{}` (min distance + time + point), `approaching`, `prevTargDist`,
+  derived `cosmicRoot = -cometPos`.
+- **Steer** (`steerToward`): rotate the velocity toward `desired = targetPos - cometPos` by at most
+  `omega*dt` radians, where `omega = cruiseSpeed / TURN_RADIUS` (Rodrigues rotation; antiparallel-safe).
+  Using a constant `TURN_RADIUS` means faster journeys turn proportionally faster and every journey
+  shares one geometric turning circle — this is the cap that keeps the path from spiralling/running away.
+- **Target order** (`pickTarget`): nearest **not-yet-visited** planet by current position (dynamic
+  greedy). Home world is marked visited at launch; the comet launches toward its first target (so it
+  clearly departs home on a curve).
+- **Retarget**: mark visited + repick when the comet is inside `FLYBY_FRACTION * threshold` of the
+  target, OR the instant it passes closest approach (`approaching && distance rising`) **but only once
+  it is genuinely close** (`distance < CAPTURE_MULT * threshold`) — the closeness gate is what stops a
+  distant target being abandoned on a mid-course distance wobble (that bug made `normal` Uranus "visited"
+  at 144 715 u before the fix). Once all planets are visited the comet coasts straight.
+- **Per-planet close-flyby threshold** (`flybyThreshold`): `max(size*6, a*0.12, 800)` — a small multiple
+  of the planet's size / a fraction of its orbital radius, floored so tiny inner worlds still get a
+  defensible margin. Harness asserts closest approach < this for every planet.
+- **Tuned params:** `TURN_RADIUS = 700`, `FLYBY_FRACTION = 0.55`, `CAPTURE_MULT = 4`. Iterated in the
+  harness: `TURN_RADIUS` 900 left `tour` Mars at 1147 u (thr 900); 700/600/500 all PASS — 700 chosen to
+  keep the arcs as grand as possible while every planet still passes.
+
+**Path preview (P2) is now the steered curve.** `cometPathSolar` resamples the integrated `simulate()`
+samples (a weaving polyline, not a ray); `pathSummary().planetsInPassOrder` carries each planet's actual
+closest-approach `point`, so `main.js rebuildCometPath()` draws the curved path and places the yellow
+waypoint markers on the real fly-by points. `simulate()` is memoized so the live 5 Hz debug panel /
+preview don't re-integrate every call.
+
+**Game wiring (`main.js`, all past the mount read cap):**
+- `planetManager.update`: replaced `cosmicRoot.position.z += CRUISE*dt` with
+  `CometWorldModel.stepState(worldSim, deltaTime)` + `cosmicRoot.position.set(worldSim.cosmicRoot…)`.
+  `deltaTime` there is the scaled world dt, matching the planet-mesh updates and the `worldElapsed`
+  clock, so steering and orbits stay in lockstep (planet angles use the same `startAngle` seed +
+  `elapsed`). Straight-cruise kept only as a fallback if the module fails to load.
+- `launchRun()`: creates `worldSim` seeded to the EXACT staged position (`-cosmicRoot.position`) so there
+  is no jump/size change at launch, re-aims via `pickTarget`, and launches toward the first target.
+- `rebuildCometPath()`: markers now use `p.point` (steered closest-approach) instead of a straight-line
+  projection; the polyline uses the curved `cometPathSolar`.
+- Untouched and still working: phase chain (menu/intro/playing/won/lost), break system, home staging,
+  size options (S/M/L/XL), debug world-state panel (G), path/orbit toggle (V).
+
+**Harness (`sim/harness.js`) rewrite + ACTUAL result.** For each journey it runs the full `simulate()`
+and asserts: (1) path length > 0; (2) a CLOSE flyby of EVERY planet (closest approach < `flybyThreshold`);
+(3) every planet visited; (4) bounded path (`maxCoord < 2.5*maxA + 5000`); (5) clear departure from home.
+It prints each planet's closest-approach distance + time. **`node sim/harness.js` → RESULT: PASS for all
+4 journeys.** Representative closest-approach numbers (u):
+- normal: Neptune 809, Jupiter 1951, Earth 104, Mercury 109, Venus 100, Mars 266, Saturn 4169,
+  Uranus 8127 (thresholds 27840/4800/960/800/900/1416/8880/17760); maxCoord 233 489 < 585 000.
+- tour: Earth 261, Venus 89, Mercury 76, Mars 79, Uranus 6, Neptune 327, Saturn 987, Jupiter 5;
+  maxCoord 16 032 < 47 500.
+- reverse-tour: Mercury 295, Earth 701, Venus 121, Mars 216, Uranus 424, Jupiter 1357, Neptune 368,
+  Saturn 2; maxCoord 18 376 < 47 500.
+- oort-cloud: Uranus 887, Mars 312, Earth 252, Mercury 171, Venus 576, Jupiter 1503, Neptune 9250,
+  Saturn 2; maxCoord 21 319 < 67 500.
+The step trace shows the comet's `comet_solar (x,z)` swinging around (weaving), not a monotone z-line.
+
+## Verification notes (no-browser + mount cap)
+- `node --check` PASSES for `sim/worldmodel.js`, `sim/harness.js`, `Planet.js`. `node sim/harness.js`
+  RESULT: PASS (4 journeys), now asserting a CLOSE FLYBY of every planet + bounded path (see P6 above).
+- The Linux mount hard-caps `main.js` reads at the original ~110,609 bytes (positioned reads past the
+  cap return 0), so a whole-file `node --check main.js` on the mount only validates up to ~line 2473.
+  That range PASSES and covers the pre-cap edits (size scale, angle-sync, glow, nebula, applyCometSize,
+  size UI, V/G handlers). The one substantial past-cap block (the P1 world-state/P2 path block) was
+  syntax-checked standalone (PASS). All `main.js` changes were made via exact-match edits at statement
+  boundaries. Could NOT verify in-browser rendering/booting (no browser in sandbox).
+- **P6 (2026-07):** the four P6 `main.js` edits (steered cruise in `planetManager.update`, `let worldSim`,
+  `launchRun` sim init, `rebuildCometPath` markers) all land past the ~line-2474 cap, so they are NOT
+  visible to a mount `node --check`. Verified instead as prior runs did: `node --check main.js` PASSES the
+  pre-cap range (1..2474), and all four authored P6 blocks were extracted and `node --check`ed standalone
+  (PASS). `sim/worldmodel.js` + `sim/harness.js` were rewritten larger than their capped originals, so
+  they were re-installed via a native (bash) write to reset the mount read cap; both then `node --check`
+  PASS in full and `node sim/harness.js` runs the whole file. No browser available to confirm the live
+  weave renders, but the game runs the identical `stepState()` the harness proves.
