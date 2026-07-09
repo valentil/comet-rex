@@ -229,3 +229,42 @@ The step trace shows the comet's `comet_solar (x,z)` swinging around (weaving), 
   they were re-installed via a native (bash) write to reset the mount read cap; both then `node --check`
   PASS in full and `node sim/harness.js` runs the whole file. No browser available to confirm the live
   weave renders, but the game runs the identical `stepState()` the harness proves.
+
+## HUD cleanup (2026-07-08) — hide debug panels, de-clutter/de-overlap the on-screen HUD
+Pure HUD/CSS/default-visibility pass. **No game logic, physics, world model (`sim/`), cruise, break
+system, size options, or pickups were touched.** Changes:
+- **Debug stats panel OFF by default.** `main.js` `let debugStats = true;` -> `false` (~line 127). Also
+  added `display: none;` to the inline `#stats-panel` rule in `index.html` (belt-and-suspenders so there
+  is no first-frame flash before the animate loop runs). Visibility is still gated on `debugStats` in the
+  animate loop (`statsPanel.style.display = debugStats ? 'block' : 'none'`) and toggled live by the
+  "Performance Stats" checkbox in Graphics Options (`statsCheckbox.checked = debugStats` reflects the new
+  default; its `onchange` still flips both). `Top Geometries` / `Debug:` readouts are debug-only, so they
+  are hidden with the panel. The COMET REX title (top-right) no longer sits under the stats panel.
+- **World-state panel (`G` key) already OFF by default** — confirmed, no change needed: `#worldstate-panel`
+  is `display:none` in `index.html` and `let showWorldState = false;` in `main.js` (~line 2806). `G` still
+  toggles it via `updateWorldStatePanel()`.
+- **Gameplay HUD re-stacked as a tidy top-left column** (all `left:20px`), moved BELOW the menu-button row
+  (Options / Graphics Options live at `top:20px`) so nothing overlaps the menu or each other. New `top`
+  values in `main.js`: `scoreElement` 20->**68px**, `multiplierElement` 50->**102px**,
+  `milestoneElement` (Approaching / SOI line) 60->**132px**, `crystalHud` (Crystals | Mined) 84->**164px**.
+  Previously `multiplier`(50) and `milestone`(60) overlapped, and the whole column collided with
+  `optionsMenuContainer` at `top:20px/left:20px`.
+- **Menu panels made mutually exclusive.** `toggleOptionsButton` and `graphicsOptionsToggleButton` click
+  handlers now hide the other panel when opening one, so the Options panel and the Graphics Options panel
+  can never stack on top of each other — only ONE clean overlay shows at a time; closing returns cleanly.
+
+### Verification (HUD pass)
+- `node --check` on `main.js`: NOTE a gotcha — because `main.js` uses top-level ESM `import`, `node --check
+  main.js` (CJS mode) silently passes even on a broken file (an appended unterminated `{` still exits 0).
+  So it was checked as an ES module: `cp main.js /tmp/main.mjs && node --check /tmp/main.mjs` -> **exit 0
+  (PASS)**, and the negative control (same file + `let zzz = {`) correctly **exit 1**, proving the check is
+  real. This validated the WHOLE file (3167 lines), not just the pre-~2474 mount-cap range — `node` reads
+  from disk directly, so the Read-tool 110KB cap does not apply to `node --check`.
+- ID cross-check: every `getElementById` in `main.js` (`stats-panel`, `fps-val`, `tri-val`, `draw-val`,
+  `top-geos`, `worldstate-panel`, `start-screen`) resolves to an id present in `index.html`. `debug-info`
+  exists in HTML as an empty display-only div (no JS ref) — harmless, left as-is.
+- Toggle-default consistency confirmed: `debugStats=false` <-> `statsCheckbox.checked=false` <-> CSS
+  `display:none` <-> animate-loop gate; `showWorldState=false` <-> `#worldstate-panel display:none`.
+- **Could NOT visually confirm in a browser** (no browser/CDN in the sandbox, and Three.js loads from a
+  CDN import map). Layout `top` offsets were chosen with headroom vs. font sizes (24/18/20/16px) but the
+  exact pixel spacing is unverified on-screen.

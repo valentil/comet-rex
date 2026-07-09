@@ -124,7 +124,10 @@ milkyWayTexture.minFilter = THREE.LinearFilter; // Faster than mipmapping for sk
 
 // Loading Manager for better UI/feedback
 const loadingManager = new THREE.LoadingManager();
-let debugStats = true;
+// HUD cleanup: debug performance panel is OFF by default. Toggle via the
+// "Performance Stats" checkbox in Graphics Options (the animate loop and the
+// checkbox both gate #stats-panel visibility on this flag).
+let debugStats = false;
 const statsPanel = document.getElementById('stats-panel');
 loadingManager.onProgress = (url, itemsLoaded, itemsTotal) => {
     console.log(`Loading: ${Math.round(itemsLoaded / itemsTotal * 100)}%`);
@@ -406,7 +409,10 @@ let score = 0;
 let highestScore = 0;
 const scoreElement = document.createElement('div');
 scoreElement.style.position = 'absolute';
-scoreElement.style.top = '20px';
+// HUD cleanup: gameplay readouts stack as a tidy top-left column BELOW the
+// menu buttons (Options / Graphics Options live at top:20px). Order top->down:
+// score (68) -> multiplier (102) -> approaching/SOI (132) -> crystals (164).
+scoreElement.style.top = '68px';
 scoreElement.style.left = '20px';
 scoreElement.style.color = 'white';
 scoreElement.style.fontFamily = 'Arial, sans-serif';
@@ -416,7 +422,7 @@ document.body.appendChild(scoreElement);
 
 const multiplierElement = document.createElement('div');
 multiplierElement.style.position = 'absolute';
-multiplierElement.style.top = '50px';
+multiplierElement.style.top = '102px';
 multiplierElement.style.left = '20px';
 multiplierElement.style.color = '#00ff00';
 multiplierElement.style.fontFamily = 'Arial, sans-serif';
@@ -745,7 +751,7 @@ let pickupRespawnPending = false;
 
 const crystalHud = document.createElement('div');
 crystalHud.style.position = 'absolute';
-crystalHud.style.top = '84px';
+crystalHud.style.top = '164px';
 crystalHud.style.left = '20px';
 crystalHud.style.color = '#66ffcc';
 crystalHud.style.fontFamily = 'Arial, sans-serif';
@@ -1456,7 +1462,7 @@ function calculateSOI(a, planetMass, starMass) {
 
 const milestoneElement = document.createElement('div');
 milestoneElement.style.position = 'absolute';
-milestoneElement.style.top = '60px';
+milestoneElement.style.top = '132px';
 milestoneElement.style.left = '20px';
 milestoneElement.style.color = 'yellow';
 milestoneElement.style.fontFamily = 'Arial, sans-serif';
@@ -1546,9 +1552,12 @@ optionsPanel.style.display = 'none'; // Ensure panel is hidden initially
 optionsMenuContainer.appendChild(optionsPanel);
 
 toggleOptionsButton.addEventListener('click', () => {
-    optionsPanel.classList.toggle('hidden');
-    // Also toggle display property directly for robustness
-    optionsPanel.style.display = optionsPanel.classList.contains('hidden') ? 'none' : 'flex';
+    const willShow = optionsPanel.style.display === 'none';
+    // HUD cleanup: menu panels are mutually exclusive, so the Options panel and
+    // the Graphics Options panel never stack on top of each other.
+    graphicsOptionsPanel.style.display = 'none';
+    optionsPanel.style.display = willShow ? 'flex' : 'none';
+    optionsPanel.classList.toggle('hidden', !willShow);
 });
 
 // --- Graphics Options (SDGF-52: Moved to new right-side menu) ---
@@ -1580,6 +1589,10 @@ optionsMenuContainer.appendChild(graphicsOptionsToggleButton);
 
 graphicsOptionsToggleButton.addEventListener('click', () => {
     const isHidden = graphicsOptionsPanel.style.display === 'none';
+    // HUD cleanup: mutually exclusive with the Options panel so only ONE clean
+    // overlay is ever visible at a time.
+    optionsPanel.style.display = 'none';
+    optionsPanel.classList.add('hidden');
     graphicsOptionsPanel.style.display = isHidden ? 'flex' : 'none';
     if (isHidden) {
         console.log('Opening Graphics Options Menu');
