@@ -2514,6 +2514,21 @@ const planetManager = {
             cosmicRoot.position.z += COMET_CRUISE_BASE * speedMultiplier * deltaTime;
         }
 
+        // SDGF-81 fix: the comet is pinned at the render origin while the whole solar
+        // system (cosmicRoot) scrolls past it, so the comet's true heading through space
+        // is the OPPOSITE of how cosmicRoot moves: v = -d(cosmicRoot)/dt = (prev-now)/dt.
+        // Feed that to the tail (CometTail uses -velocity as its backward axis) so the
+        // trail always streams BEHIND our direction of travel instead of a fixed guess.
+        if (!this._prevCosmicRoot) this._prevCosmicRoot = new THREE.Vector3().copy(cosmicRoot.position);
+        if (deltaTime > 0) {
+            window.cometCurrentVelocity.set(
+                (this._prevCosmicRoot.x - cosmicRoot.position.x) / deltaTime,
+                (this._prevCosmicRoot.y - cosmicRoot.position.y) / deltaTime,
+                (this._prevCosmicRoot.z - cosmicRoot.position.z) / deltaTime
+            );
+        }
+        this._prevCosmicRoot.copy(cosmicRoot.position);
+
         let closestPlanet = null;
         let minDist = Infinity;
         let newSOI = 'Sun';
