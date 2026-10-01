@@ -37,6 +37,10 @@ npx serve .
 
 Only the assets actually referenced by the code ship here — the original working folder held ~245 MB of duplicate `.glb` exports and unused texture variants, which have been pruned. The playable build is self-contained.
 
+## Credits
+
+Planet, sun and star textures are from [Solar System Scope](https://www.solarsystemscope.com/textures/), licensed [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). The code is MIT (below); the textures keep their own licence.
+
 ## License
 
 MIT © Lewis Valentine
